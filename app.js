@@ -266,6 +266,8 @@
     search: "",
     reviewPage: 1,
     reviewRememberIds: new Set(),
+    reviewSelectedIds: new Set(),
+    reviewDraftCategories: {},
     importStatusMessage: "",
     importStatusAiResult: null,
     currentMonth: "",
@@ -403,6 +405,8 @@
     state.transactions = readScopedJson("transactions", [], { monthScoped: true });
     state.importStatusMessage = "";
     state.importStatusAiResult = null;
+    state.reviewSelectedIds.clear();
+    state.reviewDraftCategories = {};
     state.reviewRememberIds.clear();
   }
 
@@ -680,6 +684,8 @@
     state.search = "";
     state.reviewPage = 1;
     state.reviewRememberIds.clear();
+    state.reviewSelectedIds.clear();
+    state.reviewDraftCategories = {};
     state.hasImportNotice = false;
     if (els.categoryFilter) els.categoryFilter.value = "all";
     if (els.searchInput) els.searchInput.value = "";
@@ -769,6 +775,8 @@
     const deletedOldFiles = await deleteCloudUploadedFilesForCurrentMonth();
     state.transactions = [];
     state.reviewRememberIds.clear();
+    state.reviewSelectedIds.clear();
+    state.reviewDraftCategories = {};
     state.filterCategory = "all";
     state.search = "";
     if (els.categoryFilter) els.categoryFilter.value = "all";
@@ -1946,13 +1954,10 @@
     const tx = state.transactions.find((item) => item.id === id);
     if (!tx || !category) return;
 
-    tx.category = category;
-    tx.confidence = 100;
-    tx.reason = "人工确认";
-    tx.needsReview = false;
-    tx.aiAutoClassified = false;
-    tx.aiAutoReason = "";
+    applyConfirmedCategory(tx, category, "人工确认");
     state.reviewRememberIds.delete(id);
+    state.reviewSelectedIds.delete(id);
+    delete state.reviewDraftCategories[id];
     tx.rememberCandidate = remember && category !== "uncertain" ? {
       keyword: bestMemoryKeyword(tx),
       category,
@@ -1963,6 +1968,63 @@
     if (tx.rememberCandidate) {
       showRememberRuleDialog(id, category);
     }
+  }
+
+  function applyConfirmedCategory(tx, category, reason = "人工确认") {
+    tx.category = category;
+    tx.confidence = 100;
+    tx.reason = reason;
+    tx.needsReview = false;
+    tx.aiAutoClassified = false;
+    tx.aiAutoReason = "";
+    tx.rememberCandidate = null;
+  }
+
+  function reviewDefaultCategory(tx) {
+    const candidate = state.reviewDraftCategories[tx.id]
+      || tx.aiSuggestion?.category
+      || tx.category
+      || "daily";
+    return candidate === "uncertain" ? "daily" : candidate;
+  }
+
+  function confirmSelectedReviews() {
+    const ids = Array.from(state.reviewSelectedIds);
+    if (!ids.length) return;
+
+    let confirmed = 0;
+    let remembered = 0;
+    ids.forEach((id) => {
+      const tx = state.transactions.find((item) => item.id === id && item.needsReview);
+      if (!tx) {
+        state.reviewSelectedIds.delete(id);
+        state.reviewRememberIds.delete(id);
+        delete state.reviewDraftCategories[id];
+        return;
+      }
+
+      const category = reviewDefaultCategory(tx);
+      if (!category) return;
+      const shouldRemember = state.reviewRememberIds.has(id) && category !== "uncertain";
+      applyConfirmedCategory(tx, category, "批量确认");
+      if (shouldRemember) {
+        const result = rememberRuleFromTransaction(tx, category);
+        if (result?.added) remembered += 1;
+      }
+      state.reviewSelectedIds.delete(id);
+      state.reviewRememberIds.delete(id);
+      delete state.reviewDraftCategories[id];
+      confirmed += 1;
+    });
+
+    if (!confirmed) return;
+    if (remembered) {
+      classifyAll();
+    } else {
+      saveCurrentMonthTransactions();
+    }
+    setImportStatus(`已批量确认 ${confirmed} 笔${remembered ? `，新记住规则 ${remembered} 条` : ""}`);
+    render();
   }
 
   function rememberRuleFromTransaction(tx, category) {
@@ -2333,6 +2395,12 @@
     state.reviewRememberIds.forEach((id) => {
       if (!reviewIds.has(id)) state.reviewRememberIds.delete(id);
     });
+    state.reviewSelectedIds.forEach((id) => {
+      if (!reviewIds.has(id)) state.reviewSelectedIds.delete(id);
+    });
+    Object.keys(state.reviewDraftCategories).forEach((id) => {
+      if (!reviewIds.has(id)) delete state.reviewDraftCategories[id];
+    });
 
     if (!allReviews.length) {
       els.reviewList.innerHTML = `
@@ -2350,9 +2418,13 @@
         <div class="pager-info">显示 ${start + 1}-${start + reviews.length} / ${allReviews.length} 条待确认</div>
         ${reviewPagerControls(totalPages)}
       </div>
+      ${reviewSelectionBulkControls(reviews, allReviews)}
       ${reviewRememberBulkControls(reviews, allReviews)}
       ${reviews.map((tx) => `
-      <div class="confirm-item">
+      <div class="confirm-item ${state.reviewSelectedIds.has(tx.id) ? "is-selected" : ""}">
+        <button class="review-select-toggle ${state.reviewSelectedIds.has(tx.id) ? "on" : ""}" data-review-select="${escapeHtml(tx.id)}" data-selected="${state.reviewSelectedIds.has(tx.id) ? "true" : "false"}" type="button" title="选中后可批量确认" aria-label="选择这笔交易">
+          <span class="box"><i data-lucide="check"></i></span>
+        </button>
         <div class="confirm-amt">
           <div class="a num"><span class="cny">¥</span>${formatAmount(tx.amountAbs)}</div>
           <div class="d num">${escapeHtml(shortDate(tx.date))}</div>
@@ -2366,8 +2438,8 @@
           </div>
         </div>
         <div class="confirm-actions">
-          <select class="cat-select" style="${categoryStyle(tx.aiSuggestion?.category || tx.category || "daily")}" data-review-category="${escapeHtml(tx.id)}">
-            ${categoryOptions(tx.aiSuggestion?.category || tx.category || "daily", true)}
+          <select class="cat-select" style="${categoryStyle(reviewDefaultCategory(tx))}" data-review-category="${escapeHtml(tx.id)}">
+            ${categoryOptions(reviewDefaultCategory(tx), true)}
           </select>
           <button class="remember-toggle ${state.reviewRememberIds.has(tx.id) ? "on" : ""}" data-remember-toggle="${escapeHtml(tx.id)}" data-remember="${state.reviewRememberIds.has(tx.id) ? "true" : "false"}" type="button" title="确认时可选择是否保存成长期分类规则">
             <span class="box"><i data-lucide="check"></i></span>记住规则
@@ -2383,6 +2455,45 @@
         ${reviewPagerControls(totalPages)}
       </div>
     `;
+
+    els.reviewList.querySelectorAll("[data-review-select]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const id = button.getAttribute("data-review-select");
+        if (!id) return;
+        const selected = button.getAttribute("data-selected") !== "true";
+        button.setAttribute("data-selected", String(selected));
+        button.classList.toggle("on", selected);
+        button.closest(".confirm-item")?.classList.toggle("is-selected", selected);
+        if (selected) {
+          state.reviewSelectedIds.add(id);
+        } else {
+          state.reviewSelectedIds.delete(id);
+        }
+        updateReviewSelectionBulkSummary(allReviews);
+      });
+    });
+
+    els.reviewList.querySelectorAll("[data-review-category]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const id = select.getAttribute("data-review-category");
+        if (!id) return;
+        state.reviewDraftCategories[id] = select.value;
+        select.setAttribute("style", categoryStyle(select.value));
+      });
+    });
+
+    els.reviewList.querySelectorAll("[data-review-select-bulk]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = button.getAttribute("data-review-select-bulk");
+        const targets = mode.includes("page") ? reviews : allReviews;
+        const selected = mode.endsWith("on");
+        setReviewSelectionBulk(targets, selected);
+        renderReviews();
+        refreshIcons();
+      });
+    });
+
+    els.reviewList.querySelector("[data-confirm-selected]")?.addEventListener("click", confirmSelectedReviews);
 
     els.reviewList.querySelectorAll("[data-remember-toggle]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -2417,6 +2528,7 @@
         const select = els.reviewList.querySelector(`[data-review-category="${cssEscape(id)}"]`);
         const rememberButton = els.reviewList.querySelector(`[data-remember-toggle="${cssEscape(id)}"]`);
         const remember = rememberButton?.getAttribute("data-remember") === "true";
+        if (select?.value) state.reviewDraftCategories[id] = select.value;
         confirmTransaction(id, select.value, remember);
       });
     });
@@ -2447,6 +2559,35 @@
     `;
   }
 
+  function reviewSelectionBulkControls(pageReviews, allReviews) {
+    const selected = countSelectedReviews(allReviews);
+    return `
+      <div class="review-bulk review-select-bulk">
+        <div class="review-bulk-info" data-review-select-summary>
+          <i data-lucide="check-square"></i>
+          已选择 <span class="num">${selected}</span> / ${allReviews.length}
+        </div>
+        <div class="review-bulk-actions">
+          <button class="btn btn-ghost btn-sm" data-review-select-bulk="page-on" type="button" ${pageReviews.length ? "" : "disabled"}>
+            <i data-lucide="check"></i>本页选择
+          </button>
+          <button class="btn btn-ghost btn-sm" data-review-select-bulk="page-off" type="button" ${pageReviews.length ? "" : "disabled"}>
+            <i data-lucide="x"></i>本页取消
+          </button>
+          <button class="btn btn-ghost btn-sm" data-review-select-bulk="all-on" type="button">
+            <i data-lucide="list-checks"></i>全部选择
+          </button>
+          <button class="btn btn-ghost btn-sm" data-review-select-bulk="all-off" type="button">
+            <i data-lucide="x"></i>清空选择
+          </button>
+          <button class="btn btn-primary btn-sm" data-confirm-selected type="button" ${selected ? "" : "disabled"}>
+            <i data-lucide="check-check"></i>确认选中
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   function reviewRememberBulkControls(pageReviews, allReviews) {
     const selected = countRememberedReviews(allReviews);
     return `
@@ -2473,6 +2614,17 @@
     `;
   }
 
+  function setReviewSelectionBulk(reviews, selected) {
+    reviews.forEach((tx) => {
+      if (!tx?.id) return;
+      if (selected) {
+        state.reviewSelectedIds.add(tx.id);
+      } else {
+        state.reviewSelectedIds.delete(tx.id);
+      }
+    });
+  }
+
   function setReviewRememberBulk(reviews, enabled) {
     reviews.forEach((tx) => {
       if (!tx?.id) return;
@@ -2484,8 +2636,26 @@
     });
   }
 
+  function countSelectedReviews(reviews) {
+    return reviews.reduce((count, tx) => count + (state.reviewSelectedIds.has(tx.id) ? 1 : 0), 0);
+  }
+
   function countRememberedReviews(reviews) {
     return reviews.reduce((count, tx) => count + (state.reviewRememberIds.has(tx.id) ? 1 : 0), 0);
+  }
+
+  function updateReviewSelectionBulkSummary(allReviews) {
+    const selected = countSelectedReviews(allReviews);
+    const summary = els.reviewList?.querySelector("[data-review-select-summary]");
+    if (summary) {
+      summary.innerHTML = `
+        <i data-lucide="check-square"></i>
+        已选择 <span class="num">${selected}</span> / ${allReviews.length}
+      `;
+    }
+    const confirmButton = els.reviewList?.querySelector("[data-confirm-selected]");
+    if (confirmButton) confirmButton.disabled = selected === 0;
+    refreshIcons();
   }
 
   function updateReviewRememberBulkSummary(allReviews) {
