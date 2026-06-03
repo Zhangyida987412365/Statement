@@ -4,8 +4,8 @@
 
 - 前端和 AI API：Vercel
 - 登录、用户规则、月度账本：Supabase Auth + Postgres + RLS
-- 原始账单文件存储：第一版不需要。当前流程在浏览器解析 Excel / CSV 后保存结构化交易明细。
-- R2：等需要长期保存原始 PDF、图片、OFD、Excel 文件，或需要低成本大文件下载时再接。
+- 原始账单文件存储：Supabase Storage 私有 bucket `statement-files`
+- R2：等需要保存大量 PDF、图片、OFD，或需要低成本大文件下载时再接。
 
 ## Supabase
 
@@ -18,8 +18,10 @@
 
 - `finance_user_state`：每个用户自己的规则、训练记忆和字段学习结果。
 - `finance_monthly_ledgers`：每个用户每个月自己的交易明细。
+- `finance_uploaded_files`：每个用户上传过的原始账单文件记录。
+- Storage bucket `statement-files`：私有保存原始 Excel / CSV 文件。
 
-两张表都开启 RLS，只允许 `auth.uid() = user_id` 的登录用户读取和写入自己的数据。
+这些表和 Storage 对象都开启 RLS，只允许 `auth.uid() = user_id` 的登录用户读取和写入自己的数据。
 
 ## Vercel
 
@@ -54,7 +56,7 @@ REQUIRE_AI_AUTH=1
 1. 不要提交 `start_ai_server.ps1`、`.env`、账单文件夹和日志。当前 `.gitignore` / `.vercelignore` 已排除这些文件。
 2. 在 Vercel Pro 的 Spend Management 里设置预算提醒，并开启达到预算后暂停生产部署。
 3. 不要把 AI API 做成匿名公开接口。生产环境保持 `REQUIRE_AI_AUTH=1`。
-4. 首版可以不接 R2，因为当前不保存原始文件。等保存 PDF、图片、OFD 或原始 Excel 时再接对象存储。
+4. Supabase Free Plan 的 Storage 有额度限制；原始账单文件会占用 Storage，用量变大后再迁移到 R2 或升级 Supabase。
 5. 如果公开投放，后续还应加按用户/按 IP 的 AI 请求限流。
 
 ## SEO 和多语言

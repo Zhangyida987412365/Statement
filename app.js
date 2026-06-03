@@ -14,6 +14,10 @@
   const SUPABASE_TABLES = {
     userState: "finance_user_state",
     monthlyLedgers: "finance_monthly_ledgers",
+    uploadedFiles: "finance_uploaded_files",
+  };
+  const SUPABASE_STORAGE_BUCKETS = {
+    statementFiles: "statement-files",
   };
   const CLOUD_SYNC_DEBOUNCE_MS = 800;
   const SUPPORTED_LOCALES = ["zh-CN", "en"];
@@ -755,6 +759,8 @@
     let skipped = 0;
     let outOfMonth = 0;
     let failed = 0;
+    let savedFiles = 0;
+    let saveFailed = 0;
 
     const files = state.workspaceFiles;
     if (!files.length) {
@@ -774,6 +780,9 @@
         imported += result.added;
         skipped += result.skipped;
         outOfMonth += result.outOfMonth;
+        const saved = await persistUploadedStatementFile(item);
+        if (saved === true) savedFiles += 1;
+        if (saved === false) saveFailed += 1;
       } catch (error) {
         console.warn(error);
         failed += 1;
@@ -796,7 +805,7 @@
     setProcessStep("output", "done");
     setImportStatus(failed === files.length
       ? "账单读取失败，请检查文件格式后重新选择"
-      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth), aiResult);
+      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth, { savedFiles, saveFailed }), aiResult);
     saveCurrentMonthTransactions();
     finishProcessing();
     render();
@@ -898,10 +907,12 @@
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
-  function buildImportStatus(imported, skipped, failed, aiResult, outOfMonth = 0) {
+  function buildImportStatus(imported, skipped, failed, aiResult, outOfMonth = 0, storageResult = {}) {
     const parts = [`已导入 ${imported} 条`, `跳过重复 ${skipped} 条`];
     if (outOfMonth) parts.push(`跳过非${currentMonthLabel()} ${outOfMonth} 条`);
     if (failed) parts.push(`失败 ${failed} 个文件`);
+    if (storageResult.savedFiles) parts.push(`原文件已保存 ${storageResult.savedFiles} 个`);
+    if (storageResult.saveFailed) parts.push(`原文件保存失败 ${storageResult.saveFailed} 个`);
     if (aiResult?.reviewed) {
       parts.push(`AI 复核 ${aiResult.reviewed} 条`);
       if (aiResult.applied) parts.push(`AI 自动归类 ${aiResult.applied} 条`);
@@ -3022,6 +3033,68 @@
 
   function canUseCloudSync() {
     return Boolean(supabaseClient && state.authReady && state.user?.id);
+  }
+
+  async function persistUploadedStatementFile(item) {
+    if (!canUseCloudSync() || !item?.file) return null;
+    if (item.storagePath) return true;
+
+    const bucket = SUPABASE_STORAGE_BUCKETS.statementFiles;
+    const userId = state.user.id;
+    const originalName = item.name || item.file.name || "statement";
+    const storagePath = `${userId}/${state.currentMonth}/${cryptoId()}-${storageSafeFileName(originalName)}`;
+    const contentType = item.file.type || statementContentType(originalName);
+
+    try {
+      const uploadResult = await supabaseClient
+        .storage
+        .from(bucket)
+        .upload(storagePath, item.file, {
+          cacheControl: "3600",
+          contentType,
+          upsert: false,
+        });
+
+      if (uploadResult.error) throw uploadResult.error;
+
+      const metaResult = await supabaseClient
+        .from(SUPABASE_TABLES.uploadedFiles)
+        .insert({
+          user_id: userId,
+          ledger_month: state.currentMonth,
+          bucket_id: bucket,
+          storage_path: storagePath,
+          original_name: originalName,
+          source_path: item.path || originalName,
+          content_type: contentType,
+          size_bytes: item.size || item.file.size || 0,
+        });
+
+      if (metaResult.error) throw metaResult.error;
+
+      item.storagePath = storagePath;
+      return true;
+    } catch (error) {
+      console.warn("Could not persist uploaded statement file:", error);
+      return false;
+    }
+  }
+
+  function storageSafeFileName(name) {
+    const base = fileBaseName(name)
+      .normalize("NFKC")
+      .replace(/[^\w.\-\u4e00-\u9fa5]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 120);
+    return base || "statement";
+  }
+
+  function statementContentType(name) {
+    const lower = String(name || "").toLowerCase();
+    if (lower.endsWith(".csv")) return "text/csv";
+    if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+    return "application/octet-stream";
   }
 
   async function apiHeaders() {
