@@ -765,6 +765,15 @@
       return;
     }
 
+    const replacedTransactions = state.transactions.length;
+    const deletedOldFiles = await deleteCloudUploadedFilesForCurrentMonth();
+    state.transactions = [];
+    state.reviewRememberIds.clear();
+    state.filterCategory = "all";
+    state.search = "";
+    if (els.categoryFilter) els.categoryFilter.value = "all";
+    if (els.searchInput) els.searchInput.value = "";
+
     startProcessing(`正在读取 ${files.length} 个待导入账单文件，准备生成 ${currentMonthLabel()}账本...`);
     setProcessStep("read", "active", `正在读取 ${files.length} 个待导入账单文件...`);
     for (const item of files) {
@@ -805,7 +814,13 @@
     setProcessStep("output", "done");
     setImportStatus(failed === files.length
       ? "账单读取失败，请检查文件格式后重新选择"
-      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth, { savedFiles, saveFailed, saveErrors }), aiResult);
+      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth, {
+        replacedTransactions,
+        deletedOldFiles,
+        savedFiles,
+        saveFailed,
+        saveErrors,
+      }), aiResult);
     saveCurrentMonthTransactions();
     finishProcessing();
     render();
@@ -909,6 +924,9 @@
 
   function buildImportStatus(imported, skipped, failed, aiResult, outOfMonth = 0, storageResult = {}) {
     const parts = [`已导入 ${imported} 条`, `跳过重复 ${skipped} 条`];
+    if (storageResult.replacedTransactions) parts.push(`已替换旧明细 ${storageResult.replacedTransactions} 条`);
+    if (storageResult.deletedOldFiles?.deleted) parts.push(`已删除旧源文件 ${storageResult.deletedOldFiles.deleted} 个`);
+    if (storageResult.deletedOldFiles?.error) parts.push(`旧源文件删除失败：${storageResult.deletedOldFiles.error}`);
     if (outOfMonth) parts.push(`跳过非${currentMonthLabel()} ${outOfMonth} 条`);
     if (failed) parts.push(`失败 ${failed} 个文件`);
     if (storageResult.savedFiles) parts.push(`原文件已保存 ${storageResult.savedFiles} 个`);
@@ -2205,15 +2223,9 @@
         tx.needsReview = select.value === "uncertain";
         tx.aiAutoClassified = false;
         tx.aiAutoReason = "";
-        tx.rememberCandidate = select.value !== "uncertain" ? {
-          keyword: bestMemoryKeyword(tx),
-          category: select.value,
-        } : null;
+        tx.rememberCandidate = null;
         saveCurrentMonthTransactions();
         render();
-        if (tx.rememberCandidate) {
-          showRememberRuleDialog(tx.id, tx.category);
-        }
       });
     });
 
@@ -3086,6 +3098,44 @@
 
   function canUseCloudSync() {
     return Boolean(supabaseClient && state.authReady && state.user?.id);
+  }
+
+  async function deleteCloudUploadedFilesForCurrentMonth() {
+    if (!canUseCloudSync() || !state.currentMonth) return { deleted: 0 };
+
+    try {
+      const listResult = await supabaseClient
+        .from(SUPABASE_TABLES.uploadedFiles)
+        .select("storage_path")
+        .eq("user_id", state.user.id)
+        .eq("ledger_month", state.currentMonth);
+
+      if (listResult.error) throw listResult.error;
+
+      const paths = (listResult.data || [])
+        .map((item) => item.storage_path)
+        .filter(Boolean);
+
+      if (paths.length) {
+        const removeResult = await supabaseClient
+          .storage
+          .from(SUPABASE_STORAGE_BUCKETS.statementFiles)
+          .remove(paths);
+        if (removeResult.error) throw removeResult.error;
+      }
+
+      const deleteResult = await supabaseClient
+        .from(SUPABASE_TABLES.uploadedFiles)
+        .delete()
+        .eq("user_id", state.user.id)
+        .eq("ledger_month", state.currentMonth);
+
+      if (deleteResult.error) throw deleteResult.error;
+      return { deleted: paths.length };
+    } catch (error) {
+      console.warn("Could not delete old uploaded statement files:", error);
+      return { deleted: 0, error: error.message || "源文件删除失败" };
+    }
   }
 
   async function persistUploadedStatementFile(item) {
