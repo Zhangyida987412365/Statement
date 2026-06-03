@@ -37,6 +37,7 @@
       reimport: "重新导入",
       export: "导出",
       notImported: "尚未导入",
+      ledgerLoaded: "已载入 {month}账本 · {count} 条明细",
       chooseBills: "选择账单",
       chooseFolder: "选择文件夹",
       importAnalyze: "导入并分析",
@@ -84,6 +85,7 @@
       reimport: "Re-import",
       export: "Export",
       notImported: "Not imported yet",
+      ledgerLoaded: "Loaded {month} ledger · {count} transactions",
       chooseBills: "Choose bills",
       chooseFolder: "Choose folder",
       importAnalyze: "Import and analyze",
@@ -264,6 +266,8 @@
     search: "",
     reviewPage: 1,
     reviewRememberIds: new Set(),
+    importStatusMessage: "",
+    importStatusAiResult: null,
     currentMonth: "",
     locale: "zh-CN",
     storageOwnerKey: "",
@@ -276,6 +280,7 @@
   };
 
   const AI_AUTO_FILTER = "aiAuto";
+  const AUTO_APPLY_AI_REVIEW = false;
   const REVIEW_PAGE_SIZE = 40;
 
   const PROCESS_STEPS = ["read", "normalize", "classify", "ai", "output"];
@@ -396,6 +401,8 @@
       || readJson(STORAGE_KEYS.legacyMemories, []);
     state.fieldAliases = readScopedJson("fieldAliases", {});
     state.transactions = readScopedJson("transactions", [], { monthScoped: true });
+    state.importStatusMessage = "";
+    state.importStatusAiResult = null;
     state.reviewRememberIds.clear();
   }
 
@@ -440,20 +447,16 @@
     els.loadWorkspaceBtn.addEventListener("click", () => {
       state.transactions = [];
       saveCurrentMonthTransactions();
-      state.hasImportNotice = true;
-      if (els.importStatus) {
-        els.importStatus.textContent = state.workspaceFiles.length
-          ? "请确认待导入文件，或删除后重新选择账单"
-          : `请上传 ${currentMonthLabel()}账单文件`;
-      }
+      setImportStatus(state.workspaceFiles.length
+        ? "请确认待导入文件，或删除后重新选择账单"
+        : `请上传 ${currentMonthLabel()}账单文件`);
       render();
     });
     els.startOrganizeBtn.addEventListener("click", loadWorkspaceFiles);
     els.clearTransactionsBtn.addEventListener("click", () => {
       state.transactions = [];
       saveCurrentMonthTransactions();
-      state.hasImportNotice = true;
-      els.importStatus.textContent = "已清空明细";
+      setImportStatus("已清空明细");
       render();
     });
 
@@ -681,9 +684,7 @@
     if (els.categoryFilter) els.categoryFilter.value = "all";
     if (els.searchInput) els.searchInput.value = "";
     setDefaultDailyDate(true);
-    if (els.importStatus) {
-      els.importStatus.textContent = `已切换到 ${currentMonthLabel()}账本，请上传这个月的流水文件`;
-    }
+    setImportStatus(`已切换到 ${currentMonthLabel()}账本，请上传这个月的流水文件`);
     render();
     loadCloudUserData();
   }
@@ -691,8 +692,7 @@
   function queueSelectedFiles(files) {
     const accepted = files.filter(isSupportedStatementFile);
     if (!accepted.length) {
-      state.hasImportNotice = true;
-      if (els.importStatus) els.importStatus.textContent = "没有可读取的账单文件，请选择 Excel 或 CSV";
+      setImportStatus("没有可读取的账单文件，请选择 Excel 或 CSV");
       renderStage();
       renderWorkspaceFiles();
       return;
@@ -717,13 +717,10 @@
       added += 1;
     });
 
-    state.hasImportNotice = true;
-    if (els.importStatus) {
-      const duplicate = accepted.length - added;
-      els.importStatus.textContent = added
-        ? `已选择 ${state.workspaceFiles.length} 个待导入文件${duplicate ? `，跳过重复 ${duplicate} 个` : ""}`
-        : "这些账单文件已经在待导入列表里";
-    }
+    const duplicate = accepted.length - added;
+    setImportStatus(added
+      ? `已选择 ${state.workspaceFiles.length} 个待导入文件${duplicate ? `，跳过重复 ${duplicate} 个` : ""}`
+      : "这些账单文件已经在待导入列表里");
     renderWorkspaceFiles();
     renderStage();
     refreshIcons();
@@ -743,12 +740,9 @@
 
   function removeQueuedFile(id) {
     state.workspaceFiles = state.workspaceFiles.filter((item) => item.id !== id);
-    state.hasImportNotice = true;
-    if (els.importStatus) {
-      els.importStatus.textContent = state.workspaceFiles.length
-        ? `待导入列表还剩 ${state.workspaceFiles.length} 个文件`
-        : "已清空待导入文件，请重新选择账单";
-    }
+    setImportStatus(state.workspaceFiles.length
+      ? `待导入列表还剩 ${state.workspaceFiles.length} 个文件`
+      : "已清空待导入文件，请重新选择账单");
     renderWorkspaceFiles();
     renderStage();
     refreshIcons();
@@ -764,8 +758,7 @@
 
     const files = state.workspaceFiles;
     if (!files.length) {
-      if (els.importStatus) els.importStatus.textContent = "请先选择要导入的账单文件";
-      state.hasImportNotice = true;
+      setImportStatus("请先选择要导入的账单文件");
       renderStage();
       renderWorkspaceFiles();
       return;
@@ -934,9 +927,29 @@
     return parts.join("，");
   }
 
+  function renderImportStatus() {
+    if (!els.importStatus) return;
+    if (state.importStatusMessage) {
+      paintImportStatus(state.importStatusMessage, state.importStatusAiResult);
+      return;
+    }
+    if (state.transactions.length) {
+      paintImportStatus(t("ledgerLoaded", { month: currentMonthLabel(), count: state.transactions.length }));
+      return;
+    }
+    els.importStatus.textContent = t("notImported");
+  }
+
   function setImportStatus(message, aiResult = null) {
     if (!els.importStatus) return;
     state.hasImportNotice = true;
+    state.importStatusMessage = message;
+    state.importStatusAiResult = aiResult;
+    paintImportStatus(message, aiResult);
+  }
+
+  function paintImportStatus(message, aiResult = null) {
+    if (!els.importStatus) return;
     const applied = Number(aiResult?.applied || 0);
     const autoText = applied ? `AI 自动归类 ${applied} 条` : "";
     if (!autoText || !message.includes(autoText)) {
@@ -1179,7 +1192,12 @@
   }
 
   function addTransactions(records) {
-    const signatures = new Set(state.transactions.map((tx) => tx.id));
+    const existingIds = new Set(state.transactions.map((tx) => tx.id));
+    const existingSignatures = state.transactions.reduce((map, tx) => {
+      const key = transactionDedupeKey(tx);
+      map.set(key, (map.get(key) || 0) + 1);
+      return map;
+    }, new Map());
     let added = 0;
     let skipped = 0;
     let outOfMonth = 0;
@@ -1189,13 +1207,18 @@
         outOfMonth += 1;
         return;
       }
-      if (signatures.has(record.id)) {
+      if (existingIds.has(record.id)) {
+        consumeExistingSignature(existingSignatures, record);
+        skipped += 1;
+        return;
+      }
+      if (consumeExistingSignature(existingSignatures, record)) {
         skipped += 1;
         return;
       }
       record.ledgerMonth = state.currentMonth;
       state.transactions.push(record);
-      signatures.add(record.id);
+      existingIds.add(record.id);
       added += 1;
     });
 
@@ -1205,6 +1228,22 @@
     });
 
     return { added, skipped, outOfMonth };
+  }
+
+  function transactionDedupeKey(tx) {
+    return tx.signature || tx.id;
+  }
+
+  function consumeExistingSignature(signatureCounts, tx) {
+    const key = transactionDedupeKey(tx);
+    const count = signatureCounts.get(key) || 0;
+    if (!count) return false;
+    if (count === 1) {
+      signatureCounts.delete(key);
+    } else {
+      signatureCounts.set(key, count - 1);
+    }
+    return true;
   }
 
   function classifyAll() {
@@ -1334,7 +1373,7 @@
             reason: cleanText(review.reason).slice(0, 80),
           };
 
-          if (review.category !== "uncertain" && confidence >= 82) {
+          if (AUTO_APPLY_AI_REVIEW && review.category !== "uncertain" && confidence >= 82) {
             tx.category = review.category;
             tx.confidence = confidence;
             tx.reason = `AI复核：${tx.aiSuggestion.reason || categoryName(review.category)}`;
@@ -1350,9 +1389,9 @@
         throw new Error("AI 批量复核全部失败");
       }
 
-      const messageBase = applied
+      const messageBase = AUTO_APPLY_AI_REVIEW && applied
         ? `AI 已复核 ${reviewed} 条，其中 ${applied} 条置信度较高，已写入分类`
-        : `AI 已复核 ${reviewed} 条，低置信度项目继续保留待确认`;
+        : `AI 已复核 ${reviewed} 条，已生成建议，待确认后再写入分类`;
       const retryMessage = failedBatches
         ? `；${failedBatches} 批重试后仍失败，相关交易保留待确认`
         : retryBatches
@@ -2030,6 +2069,7 @@
     applyI18n();
     renderLedgerContext();
     renderAuth();
+    renderImportStatus();
     renderStage();
     renderMetrics();
     renderOutputSchema();
@@ -2633,7 +2673,7 @@
 
   function exportWorkbook() {
     if (!state.transactions.length) {
-      els.importStatus.textContent = "暂无明细可导出";
+      setImportStatus("暂无明细可导出");
       return;
     }
 
@@ -3153,9 +3193,17 @@
 
       if (ledgerResult.data) {
         state.transactions = normalizeRemoteArray(ledgerResult.data.transactions, []);
+        state.importStatusMessage = "";
+        state.importStatusAiResult = null;
+        state.hasImportNotice = false;
         writeJson(scopedStorageKey("transactions", { monthScoped: true }), state.transactions);
       } else {
         await persistCloudLedgerNow();
+        if (state.transactions.length) {
+          state.importStatusMessage = "";
+          state.importStatusAiResult = null;
+          state.hasImportNotice = false;
+        }
       }
 
       state.cloudSyncError = "";
