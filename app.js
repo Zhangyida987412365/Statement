@@ -755,6 +755,7 @@
     let failed = 0;
     let savedFiles = 0;
     let saveFailed = 0;
+    const saveErrors = [];
 
     const files = state.workspaceFiles;
     if (!files.length) {
@@ -775,7 +776,13 @@
         outOfMonth += result.outOfMonth;
         const saved = await persistUploadedStatementFile(item);
         if (saved === true) savedFiles += 1;
-        if (saved === false) saveFailed += 1;
+        if (saved === false) {
+          saveFailed += 1;
+          saveErrors.push({
+            name: item.name || fileBaseName(item.path || ""),
+            error: item.storageError || "源文件保存失败",
+          });
+        }
       } catch (error) {
         console.warn(error);
         failed += 1;
@@ -798,7 +805,7 @@
     setProcessStep("output", "done");
     setImportStatus(failed === files.length
       ? "账单读取失败，请检查文件格式后重新选择"
-      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth, { savedFiles, saveFailed }), aiResult);
+      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth, { savedFiles, saveFailed, saveErrors }), aiResult);
     saveCurrentMonthTransactions();
     finishProcessing();
     render();
@@ -905,7 +912,13 @@
     if (outOfMonth) parts.push(`跳过非${currentMonthLabel()} ${outOfMonth} 条`);
     if (failed) parts.push(`失败 ${failed} 个文件`);
     if (storageResult.savedFiles) parts.push(`原文件已保存 ${storageResult.savedFiles} 个`);
-    if (storageResult.saveFailed) parts.push(`原文件保存失败 ${storageResult.saveFailed} 个`);
+    if (storageResult.saveFailed) {
+      const firstError = storageResult.saveErrors?.[0];
+      const detail = firstError
+        ? `：${firstError.name}${firstError.error ? `（${firstError.error}）` : ""}`
+        : "";
+      parts.push(`原文件保存失败 ${storageResult.saveFailed} 个${detail}`);
+    }
     if (aiResult?.reviewed) {
       parts.push(`AI 复核 ${aiResult.reviewed} 条`);
       if (aiResult.applied) parts.push(`AI 自动归类 ${aiResult.applied} 条`);
@@ -3083,7 +3096,7 @@
     const userId = state.user.id;
     const originalName = item.name || item.file.name || "statement";
     const storagePath = `${userId}/${state.currentMonth}/${cryptoId()}-${storageSafeFileName(originalName)}`;
-    const contentType = item.file.type || statementContentType(originalName);
+    const contentType = statementContentType(originalName);
 
     try {
       const uploadResult = await supabaseClient
@@ -3116,6 +3129,7 @@
       return true;
     } catch (error) {
       console.warn("Could not persist uploaded statement file:", error);
+      item.storageError = error.message || "源文件保存失败";
       return false;
     }
   }
