@@ -769,14 +769,18 @@ table.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; min-wi
 .source-tag { font-size: 12px; color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--border); padding: 6px 12px; border-radius: 99px; display: flex; align-items: center; gap: 7px; }
 
 /* file chips during import */
-.file-chips { display: flex; flex-direction: column; gap: 8px; max-width: 420px; margin: 18px auto 0; text-align: left; }
+.file-chips { display: flex; flex-direction: column; gap: 8px; max-width: 420px; max-height: 300px; overflow: auto; margin: 18px auto 0; text-align: left; }
 .file-chip { display: flex; align-items: center; gap: 11px; padding: 11px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-xs); }
 .file-chip .fc-ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+.file-chip .fc-body { min-width: 0; flex: 1; }
 .file-chip .fc-name { font-weight: 500; font-size: 13.5px; }
+.file-chip .fc-name,
+.file-chip .fc-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-chip .fc-meta { font-size: 11.5px; color: var(--ink-3); }
 .file-chip .fc-status { margin-left: auto; font-size: 12px; }
 .file-chip .fc-spin { width: 16px; height: 16px; border-radius: 99px; border: 2px solid var(--green-200); border-top-color: var(--green-600); animation: spin .7s linear infinite; }
 .fc-check { color: var(--green-600); }
+.fc-remove { flex: none; }
 
 /* processing overlay */
 .proc { max-width: 460px; margin: 0 auto; }

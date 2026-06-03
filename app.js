@@ -115,13 +115,6 @@
     },
   };
 
-  const WORKSPACE_FILES = [
-    "账单文件夹/9186-20266.xls",
-    "账单文件夹/交易明细 20260501-20260531.xls",
-    "9186-20266.xls",
-    "交易明细 20260501-20260531.xls",
-  ];
-
   const DETAIL_SCHEMA = [
     { key: "date", label: "交易日期", value: (tx) => tx.date },
     { key: "postDate", label: "记账日期", value: (tx) => tx.postDate },
@@ -261,6 +254,7 @@
     memories: [],
     fieldAliases: {},
     workspaceFiles: [],
+    workspaceFileSeq: 0,
     processing: false,
     filterCategory: "all",
     search: "",
@@ -294,7 +288,6 @@
     setDefaultDailyDate();
     initSupabaseAuth();
     render();
-    refreshWorkspacePreview();
     refreshIcons();
   });
 
@@ -411,12 +404,12 @@
     }
 
     els.fileInput.addEventListener("change", (event) => {
-      handleFiles(Array.from(event.target.files || []));
+      queueSelectedFiles(Array.from(event.target.files || []));
       event.target.value = "";
     });
 
     els.folderInput.addEventListener("change", (event) => {
-      handleFiles(Array.from(event.target.files || []));
+      queueSelectedFiles(Array.from(event.target.files || []));
       event.target.value = "";
     });
 
@@ -435,13 +428,19 @@
       event.preventDefault();
       els.dropzone.classList.remove("dragging");
       els.dropzone.classList.remove("drag");
-      handleFiles(Array.from(event.dataTransfer.files || []));
+      queueSelectedFiles(Array.from(event.dataTransfer.files || []));
     });
 
     els.loadWorkspaceBtn.addEventListener("click", () => {
       state.transactions = [];
       saveCurrentMonthTransactions();
-      loadWorkspaceFiles();
+      state.hasImportNotice = true;
+      if (els.importStatus) {
+        els.importStatus.textContent = state.workspaceFiles.length
+          ? "请确认待导入文件，或删除后重新选择账单"
+          : `请上传 ${currentMonthLabel()}账单文件`;
+      }
+      render();
     });
     els.startOrganizeBtn.addEventListener("click", loadWorkspaceFiles);
     els.clearTransactionsBtn.addEventListener("click", () => {
@@ -564,7 +563,6 @@
       hydrateScopedCollections();
       setDefaultDailyDate(true);
       render();
-      refreshWorkspacePreview();
       loadCloudUserData();
       return;
     }
@@ -680,58 +678,73 @@
       els.importStatus.textContent = `已切换到 ${currentMonthLabel()}账本，请上传这个月的流水文件`;
     }
     render();
-    refreshWorkspacePreview();
     loadCloudUserData();
   }
 
-  async function handleFiles(files) {
-    const accepted = files.filter((file) => /\.(xls|xlsx|csv)$/i.test(file.name));
+  function queueSelectedFiles(files) {
+    const accepted = files.filter(isSupportedStatementFile);
     if (!accepted.length) {
       state.hasImportNotice = true;
-      els.importStatus.textContent = "没有可读取的账单文件";
+      if (els.importStatus) els.importStatus.textContent = "没有可读取的账单文件，请选择 Excel 或 CSV";
       renderStage();
+      renderWorkspaceFiles();
       return;
     }
 
-    startProcessing(`正在读取 ${accepted.length} 个账单文件，准备生成 ${currentMonthLabel()}账本...`);
-    setProcessStep("read", "active", `正在读取 ${accepted.length} 个账单文件...`);
-    let imported = 0;
-    let skipped = 0;
-    let outOfMonth = 0;
-    let failed = 0;
-    for (const file of accepted) {
-      try {
-        const parsed = await readWorkbookFile(file);
-        const result = addTransactions(parsed);
-        imported += result.added;
-        skipped += result.skipped;
-        outOfMonth += result.outOfMonth;
-      } catch (error) {
-        console.error(error);
-        failed += 1;
-      }
-    }
+    const existing = new Set(state.workspaceFiles.map((item) => item.key));
+    let added = 0;
+    accepted.forEach((file) => {
+      const key = fileQueueKey(file);
+      if (existing.has(key)) return;
+      existing.add(key);
+      state.workspaceFileSeq += 1;
+      state.workspaceFiles.push({
+        id: `queued-file-${Date.now()}-${state.workspaceFileSeq}`,
+        key,
+        file,
+        name: file.name,
+        path: displayFilePath(file),
+        size: file.size || 0,
+        lastModified: file.lastModified || 0,
+      });
+      added += 1;
+    });
 
-    setProcessStep("read", "done");
-    setProcessStep("normalize", "active", `已读取 ${imported + skipped + outOfMonth} 条原始明细，保留 ${currentMonthLabel()}交易...`);
-    await pauseForProcess();
-    setProcessStep("normalize", "done");
-    setProcessStep("classify", "active", "正在套用固定对手方、当天金额记忆和基础分类规则...");
-    classifyAll();
-    await pauseForProcess();
-    setProcessStep("classify", "done");
-    setProcessStep("ai", "active", "正在让 AI 复核规则拿不准的项目...");
-    const aiResult = await runAiReview();
-    setProcessStep("ai", aiResult.error ? "error" : "done", aiResult.message);
-    setProcessStep("output", "active", "正在生成统一明细和分类统计...");
-    await pauseForProcess();
-    setProcessStep("output", "done");
-    setImportStatus(failed === accepted.length
-      ? "账单读取失败，请检查文件格式"
-      : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth), aiResult);
-    saveCurrentMonthTransactions();
-    finishProcessing();
-    render();
+    state.hasImportNotice = true;
+    if (els.importStatus) {
+      const duplicate = accepted.length - added;
+      els.importStatus.textContent = added
+        ? `已选择 ${state.workspaceFiles.length} 个待导入文件${duplicate ? `，跳过重复 ${duplicate} 个` : ""}`
+        : "这些账单文件已经在待导入列表里";
+    }
+    renderWorkspaceFiles();
+    renderStage();
+    refreshIcons();
+  }
+
+  function isSupportedStatementFile(file) {
+    return Boolean(file?.name && /\.(xls|xlsx|csv)$/i.test(file.name));
+  }
+
+  function fileQueueKey(file) {
+    return [displayFilePath(file), file.size || 0, file.lastModified || 0].join("|");
+  }
+
+  function displayFilePath(file) {
+    return file.webkitRelativePath || file.name;
+  }
+
+  function removeQueuedFile(id) {
+    state.workspaceFiles = state.workspaceFiles.filter((item) => item.id !== id);
+    state.hasImportNotice = true;
+    if (els.importStatus) {
+      els.importStatus.textContent = state.workspaceFiles.length
+        ? `待导入列表还剩 ${state.workspaceFiles.length} 个文件`
+        : "已清空待导入文件，请重新选择账单";
+    }
+    renderWorkspaceFiles();
+    renderStage();
+    refreshIcons();
   }
 
   async function loadWorkspaceFiles() {
@@ -740,24 +753,20 @@
     let outOfMonth = 0;
     let failed = 0;
 
-    const files = state.workspaceFiles.length ? state.workspaceFiles : await resolveWorkspaceFiles();
+    const files = state.workspaceFiles;
     if (!files.length) {
-      els.importStatus.textContent = "当前目录没有找到可读取账单，请手动选择文件";
+      if (els.importStatus) els.importStatus.textContent = "请先选择要导入的账单文件";
       state.hasImportNotice = true;
       renderStage();
-      renderWorkspaceFiles([]);
+      renderWorkspaceFiles();
       return;
     }
 
-    startProcessing(`正在读取账单文件夹中的 ${files.length} 个文件，准备生成 ${currentMonthLabel()}账本...`);
-    setProcessStep("read", "active", `正在读取账单文件夹中的 ${files.length} 个文件...`);
-    for (const name of files) {
+    startProcessing(`正在读取 ${files.length} 个待导入账单文件，准备生成 ${currentMonthLabel()}账本...`);
+    setProcessStep("read", "active", `正在读取 ${files.length} 个待导入账单文件...`);
+    for (const item of files) {
       try {
-        const response = await fetch(encodeURI(name));
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const buffer = await response.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: "array", raw: false, cellDates: true });
-        const parsed = parseWorkbook(workbook, name);
+        const parsed = await readWorkbookFile(item.file, item.path || item.name);
         const result = addTransactions(parsed);
         imported += result.added;
         skipped += result.skipped;
@@ -783,40 +792,16 @@
     await pauseForProcess();
     setProcessStep("output", "done");
     setImportStatus(failed === files.length
-      ? "当前目录账单读取失败，请用选择文件导入"
+      ? "账单读取失败，请检查文件格式后重新选择"
       : buildImportStatus(imported, skipped, failed, aiResult, outOfMonth), aiResult);
     saveCurrentMonthTransactions();
     finishProcessing();
     render();
   }
 
-  async function resolveWorkspaceFiles() {
-    try {
-      const response = await fetch("/api/list-bills");
-      if (response.ok) {
-        const data = await response.json();
-        if (Array.isArray(data.files) && data.files.length) return uniqueFiles(data.files);
-      }
-    } catch {
-      // Static single-file mode cannot list folders; use known default paths.
-    }
-    return uniqueFiles(WORKSPACE_FILES);
-  }
-
-  async function refreshWorkspacePreview() {
-    const files = await resolveWorkspaceFiles();
-    state.workspaceFiles = files;
-    renderWorkspaceFiles(files);
-    if (!state.transactions.length) {
-      els.importStatus.textContent = files.length
-        ? `账单文件夹已发现 ${files.length} 个文件，可为 ${currentMonthLabel()}导入并分析`
-        : `没有发现当前目录账单，请手动选择 ${currentMonthLabel()}账单文件`;
-    }
-    refreshIcons();
-  }
-
-  function renderWorkspaceFiles(files) {
+  function renderWorkspaceFiles(files = state.workspaceFiles) {
     if (!els.workspaceFileList) return;
+    if (els.startOrganizeBtn) els.startOrganizeBtn.disabled = !files.length || state.processing;
     if (!files.length) {
       els.workspaceFileList.innerHTML = `
         <div class="file-chip">
@@ -824,46 +809,50 @@
             <i data-lucide="file-question"></i>
           </div>
           <div>
-            <div class="fc-name">没有找到当前目录账单</div>
-            <div class="fc-meta">可以点击“选择账单”或“选择文件夹”手动导入</div>
+            <div class="fc-name">还没有选择账单文件</div>
+            <div class="fc-meta">点击“选择账单”选单个或多个文件；点击“选择文件夹”导入整个文件夹里的 Excel / CSV</div>
           </div>
-          <div class="fc-status"><i data-lucide="circle-alert"></i></div>
         </div>
       `;
       return;
     }
 
-    els.workspaceFileList.innerHTML = files.slice(0, 4).map((name, index) => `
+    els.workspaceFileList.innerHTML = files.map((item, index) => `
       <div class="file-chip">
         <div class="fc-ico" style="background:${index % 2 ? "color-mix(in srgb, var(--cat-kids) 13%, white)" : "var(--green-50)"}; color:${index % 2 ? "var(--cat-kids)" : "var(--green-700)"};">
           <i data-lucide="file-spreadsheet"></i>
         </div>
-        <div>
-          <div class="fc-name">${escapeHtml(fileBaseName(name))}</div>
-          <div class="fc-meta">${escapeHtml(name)}</div>
+        <div class="fc-body">
+          <div class="fc-name">${escapeHtml(item.name || fileBaseName(item.path))}</div>
+          <div class="fc-meta">${escapeHtml(fileMetaText(item))}</div>
         </div>
         <div class="fc-status"><i data-lucide="check" class="fc-check"></i></div>
+        <button class="icon-btn danger fc-remove" data-remove-workspace-file="${escapeHtml(item.id)}" type="button" title="从待导入列表移除" aria-label="从待导入列表移除">
+          <i data-lucide="x"></i>
+        </button>
       </div>
-    `).join("") + (files.length > 4 ? `
-      <div class="file-chip">
-        <div class="fc-ico" style="background:var(--surface-2); color:var(--ink-2);">
-          <i data-lucide="files"></i>
-        </div>
-        <div>
-          <div class="fc-name">另有 ${files.length - 4} 个账单文件</div>
-          <div class="fc-meta">导入时会一起读取</div>
-        </div>
-        <div class="fc-status"><i data-lucide="check" class="fc-check"></i></div>
-      </div>
-    ` : "");
-  }
-
-  function uniqueFiles(files) {
-    return Array.from(new Set(files.filter((name) => /\.(xls|xlsx|csv)$/i.test(name))));
+    `).join("");
+    els.workspaceFileList.querySelectorAll("[data-remove-workspace-file]").forEach((button) => {
+      button.addEventListener("click", () => removeQueuedFile(button.getAttribute("data-remove-workspace-file")));
+    });
   }
 
   function fileBaseName(name) {
     return String(name).split(/[\\/]/).pop() || name;
+  }
+
+  function fileMetaText(item) {
+    const path = item.path && item.path !== item.name ? item.path : "";
+    const size = item.size ? formatFileSize(item.size) : "";
+    return [path, size].filter(Boolean).join(" · ") || "已加入待导入列表";
+  }
+
+  function formatFileSize(bytes) {
+    const value = Number(bytes || 0);
+    if (!value) return "";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
   }
 
   function startProcessing(message) {
@@ -957,17 +946,13 @@
     renderTransactions();
   }
 
-  function shouldAutoLoadWorkspace() {
-    return ["127.0.0.1", "localhost"].includes(window.location.hostname);
-  }
-
-  function readWorkbookFile(file) {
+  function readWorkbookFile(file, sourceName = file.name) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
         try {
           const workbook = XLSX.read(reader.result, { type: "array", raw: false, cellDates: true });
-          resolve(parseWorkbook(workbook, file.name));
+          resolve(parseWorkbook(workbook, sourceName || file.name));
         } catch (error) {
           reject(error);
         }
@@ -2039,6 +2024,7 @@
     renderDailyList();
     renderFixedList();
     renderRules();
+    renderWorkspaceFiles();
     refreshIcons();
   }
 
