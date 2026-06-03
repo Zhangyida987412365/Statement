@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/parse-training", "destination": "/api/parse_training" },
+    { "source": "/api/review-transactions", "destination": "/api/review_transactions" },
+    { "source": "/", "destination": "/index.html" }
+  ],
+  "functions": {
+    "api/**/*.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{账单文件夹/**,__pycache__/**,*.log,家庭账本整理台_单文件*.html}"
+    }
+  }
+}

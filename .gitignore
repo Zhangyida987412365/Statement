@@ -1,0 +1,9 @@
+.env
+*.log
+server_stdout.log
+server_stderr.log
+start_ai_server.ps1
+__pycache__/
+账单文件夹/
+家庭账本整理台_AI日志.txt
+家庭账本整理台_单文件*.html

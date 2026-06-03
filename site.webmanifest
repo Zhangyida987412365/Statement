@@ -1,0 +1,10 @@
+{
+  "name": "家庭账本整理台",
+  "short_name": "家庭账本",
+  "description": "按月导入流水账单，自动统一字段、分类分析并导出家庭账本。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FBFBF9",
+  "theme_color": "#226A45",
+  "lang": "zh-CN"
+}
