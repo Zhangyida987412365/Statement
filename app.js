@@ -3095,7 +3095,7 @@
     const bucket = SUPABASE_STORAGE_BUCKETS.statementFiles;
     const userId = state.user.id;
     const originalName = item.name || item.file.name || "statement";
-    const storagePath = `${userId}/${state.currentMonth}/${cryptoId()}-${storageSafeFileName(originalName)}`;
+    const storagePath = `${userId}/${state.currentMonth}/${cryptoId()}${storageFileExtension(originalName)}`;
     const contentType = statementContentType(originalName);
 
     try {
@@ -3134,13 +3134,9 @@
     }
   }
 
-  function storageSafeFileName(name) {
-    const base = fileBaseName(name)
-      .normalize("NFKC")
-      .replace(/[^\w.\-\u4e00-\u9fa5]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 120);
-    return base || "statement";
+  function storageFileExtension(name) {
+    const match = String(fileBaseName(name)).toLowerCase().match(/\.(csv|xlsx|xls)$/);
+    return match ? `.${match[1]}` : "";
   }
 
   function statementContentType(name) {
