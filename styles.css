@@ -607,6 +607,32 @@ table.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; min-wi
   cursor: not-allowed;
   pointer-events: none;
 }
+.review-bulk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.review-bulk-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.review-bulk-info svg { width: 15px; height: 15px; color: var(--green-700); }
+.review-bulk-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .confirm-item {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -968,6 +994,9 @@ table.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; min-wi
   .lang-pick select { width: 50px; font-size: 12px; }
   .kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
   .kpi-hero { grid-column: 1 / -1; }
+  .review-bulk { align-items: flex-start; flex-direction: column; }
+  .review-bulk-info { white-space: normal; }
+  .review-bulk-actions { justify-content: flex-start; }
   .confirm-item { grid-template-columns: 1fr; gap: 14px; }
   .confirm-amt { text-align: left; display: flex; align-items: baseline; gap: 10px; }
   .tab { margin-right: 16px; font-size: 14px; }

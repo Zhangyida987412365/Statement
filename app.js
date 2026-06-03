@@ -259,6 +259,7 @@
     filterCategory: "all",
     search: "",
     reviewPage: 1,
+    reviewRememberIds: new Set(),
     currentMonth: "",
     locale: "zh-CN",
     storageOwnerKey: "",
@@ -391,6 +392,7 @@
       || readJson(STORAGE_KEYS.legacyMemories, []);
     state.fieldAliases = readScopedJson("fieldAliases", {});
     state.transactions = readScopedJson("transactions", [], { monthScoped: true });
+    state.reviewRememberIds.clear();
   }
 
   function bindEvents() {
@@ -670,6 +672,7 @@
     state.filterCategory = "all";
     state.search = "";
     state.reviewPage = 1;
+    state.reviewRememberIds.clear();
     state.hasImportNotice = false;
     if (els.categoryFilter) els.categoryFilter.value = "all";
     if (els.searchInput) els.searchInput.value = "";
@@ -1868,6 +1871,7 @@
     tx.needsReview = false;
     tx.aiAutoClassified = false;
     tx.aiAutoReason = "";
+    state.reviewRememberIds.delete(id);
     tx.rememberCandidate = remember && category !== "uncertain" ? {
       keyword: bestMemoryKeyword(tx),
       category,
@@ -2249,6 +2253,10 @@
     state.reviewPage = Math.min(Math.max(1, state.reviewPage), totalPages);
     const start = (state.reviewPage - 1) * REVIEW_PAGE_SIZE;
     const reviews = allReviews.slice(start, start + REVIEW_PAGE_SIZE);
+    const reviewIds = new Set(allReviews.map((tx) => tx.id));
+    state.reviewRememberIds.forEach((id) => {
+      if (!reviewIds.has(id)) state.reviewRememberIds.delete(id);
+    });
 
     if (!allReviews.length) {
       els.reviewList.innerHTML = `
@@ -2266,6 +2274,7 @@
         <div class="pager-info">显示 ${start + 1}-${start + reviews.length} / ${allReviews.length} 条待确认</div>
         ${reviewPagerControls(totalPages)}
       </div>
+      ${reviewRememberBulkControls(reviews, allReviews)}
       ${reviews.map((tx) => `
       <div class="confirm-item">
         <div class="confirm-amt">
@@ -2284,7 +2293,7 @@
           <select class="cat-select" style="${categoryStyle(tx.aiSuggestion?.category || tx.category || "daily")}" data-review-category="${escapeHtml(tx.id)}">
             ${categoryOptions(tx.aiSuggestion?.category || tx.category || "daily", true)}
           </select>
-          <button class="remember-toggle" data-remember-toggle="${escapeHtml(tx.id)}" data-remember="false" type="button" title="确认时可选择是否保存成长期分类规则">
+          <button class="remember-toggle ${state.reviewRememberIds.has(tx.id) ? "on" : ""}" data-remember-toggle="${escapeHtml(tx.id)}" data-remember="${state.reviewRememberIds.has(tx.id) ? "true" : "false"}" type="button" title="确认时可选择是否保存成长期分类规则">
             <span class="box"><i data-lucide="check"></i></span>记住规则
           </button>
           <button class="btn btn-primary btn-sm" data-confirm="${escapeHtml(tx.id)}" type="button">
@@ -2301,9 +2310,28 @@
 
     els.reviewList.querySelectorAll("[data-remember-toggle]").forEach((button) => {
       button.addEventListener("click", () => {
+        const id = button.getAttribute("data-remember-toggle");
+        if (!id) return;
         const enabled = button.getAttribute("data-remember") !== "true";
         button.setAttribute("data-remember", String(enabled));
         button.classList.toggle("on", enabled);
+        if (enabled) {
+          state.reviewRememberIds.add(id);
+        } else {
+          state.reviewRememberIds.delete(id);
+        }
+        updateReviewRememberBulkSummary(allReviews);
+      });
+    });
+
+    els.reviewList.querySelectorAll("[data-review-remember-bulk]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = button.getAttribute("data-review-remember-bulk");
+        const targets = mode.includes("page") ? reviews : allReviews;
+        const enabled = mode.endsWith("on");
+        setReviewRememberBulk(targets, enabled);
+        renderReviews();
+        refreshIcons();
       });
     });
 
@@ -2341,6 +2369,57 @@
         </button>
       </div>
     `;
+  }
+
+  function reviewRememberBulkControls(pageReviews, allReviews) {
+    const selected = countRememberedReviews(allReviews);
+    return `
+      <div class="review-bulk">
+        <div class="review-bulk-info" data-review-remember-summary>
+          <i data-lucide="list-checks"></i>
+          记住规则已勾选 <span class="num">${selected}</span> / ${allReviews.length}
+        </div>
+        <div class="review-bulk-actions">
+          <button class="btn btn-ghost btn-sm" data-review-remember-bulk="page-on" type="button" ${pageReviews.length ? "" : "disabled"}>
+            <i data-lucide="check"></i>本页全选
+          </button>
+          <button class="btn btn-ghost btn-sm" data-review-remember-bulk="page-off" type="button" ${pageReviews.length ? "" : "disabled"}>
+            <i data-lucide="x"></i>本页取消
+          </button>
+          <button class="btn btn-ghost btn-sm" data-review-remember-bulk="all-on" type="button">
+            <i data-lucide="list-checks"></i>全部全选
+          </button>
+          <button class="btn btn-ghost btn-sm" data-review-remember-bulk="all-off" type="button">
+            <i data-lucide="x"></i>全部取消
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function setReviewRememberBulk(reviews, enabled) {
+    reviews.forEach((tx) => {
+      if (!tx?.id) return;
+      if (enabled) {
+        state.reviewRememberIds.add(tx.id);
+      } else {
+        state.reviewRememberIds.delete(tx.id);
+      }
+    });
+  }
+
+  function countRememberedReviews(reviews) {
+    return reviews.reduce((count, tx) => count + (state.reviewRememberIds.has(tx.id) ? 1 : 0), 0);
+  }
+
+  function updateReviewRememberBulkSummary(allReviews) {
+    const summary = els.reviewList?.querySelector("[data-review-remember-summary]");
+    if (!summary) return;
+    summary.innerHTML = `
+      <i data-lucide="list-checks"></i>
+      记住规则已勾选 <span class="num">${countRememberedReviews(allReviews)}</span> / ${allReviews.length}
+    `;
+    refreshIcons();
   }
 
   function renderDailyList() {
